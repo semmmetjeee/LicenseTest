@@ -1,1 +1,2 @@
 license-key: "PUT-YOUR-LICENSE-HERE"
+api-endpoint: "https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev/api/license/validate"
