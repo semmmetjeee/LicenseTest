@@ -1,0 +1,9 @@
+name: LicenseTest
+version: 1.0.0
+main: nl.semmetje.licensetest.LicenseTestPlugin
+api-version: '1.21'
+author: Semmetje
+commands:
+  discord:
+    description: Shows the Discord invite.
+    usage: /discord
