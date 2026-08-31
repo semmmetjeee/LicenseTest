@@ -1,15 +1,21 @@
 # LicenseTest
 
-Paper 1.21.x Maven test plugin using `semmmetje.nl` license validation.
+Paper 1.21.x Maven test plugin for the Mars Development v2 licensing platform.
+
+## Product / API
+- Product ID: `license-test`
+- Current test endpoint: `http://marsdevelopment.gt.tc/api/license/validate.php`
 
 ## Behavior
 - First boot creates only `plugins/LicenseTest/license.yml`.
 - Put a license key in it and restart.
-- Before `onEnable`, the plugin calls the license API.
-- If invalid/unreachable/over the instance limit, the plugin stays disabled.
+- Before enabling, the plugin validates the key online.
 - `config.yml` is only created after a successful license validation.
-- A local `.instance` UUID identifies the installation.
-- The API additionally stores a hashed machine fingerprint.
+- A persistent local `.instance` UUID identifies each installation.
+- The server-side API enforces the product, owner status and maximum active instances.
+- After enabling, the plugin re-checks the license every 5 minutes.
+- A revoked, renewed, blocked or globally disabled license immediately disables the plugin on its next check and prints a clear console error.
+- Temporary network/API errors are retried; after 3 consecutive failed checks the plugin disables as a safety measure.
 
 ## Build
 ```bash
@@ -17,11 +23,11 @@ mvn clean package
 ```
 
 ## Integration in another plugin
-Copy `LicenseManager.java`, change:
+Copy `LicenseManager.java` and create it with your own product slug:
 ```java
-new LicenseManager(this, "your-product-id", "https://semmmetje.nl/api/license/validate.php");
+new LicenseManager(this, "your-product-id", "http://marsdevelopment.gt.tc/api/license/validate.php");
 ```
-Then run it in `onLoad()` and guard `onEnable()`.
+Validate before normal startup, only create your normal configs after the validation succeeds, and call `startMonitoring()` after enabling.
 
 ## Security note
-No Java plugin distributed to customers can be literally un-bypassable: a determined user can decompile and patch the JAR. This implementation fails closed and keeps entitlements/instance limits server-side. For stronger protection, combine it with obfuscation, signed responses, short-lived leases, and server-side features/assets.
+No Java plugin distributed to customers can be literally un-bypassable because a determined user can decompile and patch a JAR. This implementation keeps authoritative entitlement/revocation/instance state server-side and fails closed. Use HTTPS before production; obfuscation and signed server responses can be layered on later.
