@@ -11,7 +11,12 @@ public final class LicenseTestPlugin extends JavaPlugin {
 
     @Override
     public void onLoad() {
-        licenseManager = new LicenseManager(this, "licensetest", "https://semmmetje.nl/api/license/validate.php");
+        licenseManager = new LicenseManager(
+                this,
+                "license-test",
+                "http://marsdevelopment.gt.tc/api/license/validate.php"
+        );
+
         if (!licenseManager.validateBeforeEnable()) {
             getLogger().severe("License validation failed. The plugin will remain disabled.");
         }
@@ -20,12 +25,14 @@ public final class LicenseTestPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         if (licenseManager == null || !licenseManager.isValid()) {
+            getLogger().severe("LicenseTest cannot enable without a valid license.");
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
 
         saveDefaultConfig();
-        getLogger().info("License valid. LicenseTest enabled.");
+        licenseManager.startMonitoring();
+        getLogger().info("License valid. LicenseTest enabled and runtime license monitoring started.");
     }
 
     @Override
