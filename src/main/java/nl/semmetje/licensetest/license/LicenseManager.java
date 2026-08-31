@@ -25,22 +25,21 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public final class LicenseManager {
-    private static final long RECHECK_TICKS = 20L * 60L * 5L; // 5 minutes
+    private static final long RECHECK_TICKS = 20L * 60L * 5L;
     private static final int MAX_NETWORK_FAILURES = 3;
 
     private final JavaPlugin plugin;
     private final String productId;
-    private final String endpoint;
     private final Gson gson = new Gson();
     private final AtomicInteger consecutiveNetworkFailures = new AtomicInteger();
 
     private volatile boolean valid;
     private volatile String configuredKey;
+    private volatile String endpoint;
 
-    public LicenseManager(JavaPlugin plugin, String productId, String endpoint) {
+    public LicenseManager(JavaPlugin plugin, String productId) {
         this.plugin = plugin;
         this.productId = productId;
-        this.endpoint = endpoint;
     }
 
     public boolean isValid() {
@@ -56,18 +55,30 @@ public final class LicenseManager {
                     if (in == null) throw new IllegalStateException("Bundled license.yml missing");
                     Files.copy(in, licenseFile.toPath());
                 }
-                plugin.getLogger().severe("license.yml created. Add your license key and restart the server.");
+                plugin.getLogger().severe("license.yml created. Add your license key and API endpoint, then restart the server.");
                 return false;
             }
 
             YamlConfiguration yaml = YamlConfiguration.loadConfiguration(licenseFile);
             String key = yaml.getString("license-key", "").trim();
+            String configuredEndpoint = yaml.getString("api-endpoint", "").trim();
+
             if (key.isBlank() || key.equalsIgnoreCase("PUT-YOUR-LICENSE-HERE")) {
                 plugin.getLogger().severe("No license key configured in license.yml.");
                 return false;
             }
+            if (configuredEndpoint.isBlank() || configuredEndpoint.contains("YOUR-WORKER")) {
+                plugin.getLogger().severe("No valid api-endpoint configured in license.yml.");
+                return false;
+            }
+            if (!configuredEndpoint.startsWith("https://")) {
+                plugin.getLogger().severe("The license api-endpoint must use HTTPS.");
+                return false;
+            }
 
             configuredKey = key;
+            endpoint = configuredEndpoint;
+
             ValidationResult result = validateOnline();
             if (result.type == ResultType.VALID) {
                 valid = true;
@@ -100,7 +111,7 @@ public final class LicenseManager {
                 plugin.getLogger().severe("==================================================");
                 plugin.getLogger().severe("LICENSE BECAME INVALID WHILE THE PLUGIN WAS RUNNING");
                 plugin.getLogger().severe("Reason: " + result.message);
-                plugin.getLogger().severe("LicenseTest is being disabled immediately.");
+                plugin.getLogger().severe(plugin.getName() + " is being disabled immediately.");
                 plugin.getLogger().severe("==================================================");
                 disableOnMainThread();
                 return;
@@ -110,7 +121,7 @@ public final class LicenseManager {
             plugin.getLogger().warning("License server could not be reached (" + failures + "/" + MAX_NETWORK_FAILURES + "): " + result.message);
             if (failures >= MAX_NETWORK_FAILURES) {
                 valid = false;
-                plugin.getLogger().severe("License verification failed repeatedly. Disabling LicenseTest as a safety measure.");
+                plugin.getLogger().severe("License verification failed repeatedly. Disabling " + plugin.getName() + " as a safety measure.");
                 disableOnMainThread();
             }
         }, RECHECK_TICKS, RECHECK_TICKS);
@@ -128,6 +139,9 @@ public final class LicenseManager {
         try {
             if (configuredKey == null || configuredKey.isBlank()) {
                 return new ValidationResult(ResultType.REJECTED, "No configured license key");
+            }
+            if (endpoint == null || endpoint.isBlank()) {
+                return new ValidationResult(ResultType.REJECTED, "No configured license endpoint");
             }
 
             JsonObject request = new JsonObject();
@@ -168,17 +182,14 @@ public final class LicenseManager {
                 return new ValidationResult(ResultType.VALID, json.has("message") ? json.get("message").getAsString() : "License valid");
             }
 
+            String reason = json != null && json.has("message") ? json.get("message").getAsString() : null;
             if (status >= 400 && status < 500) {
-                String reason = json != null && json.has("message") ? json.get("message").getAsString() : "HTTP " + status;
-                return new ValidationResult(ResultType.REJECTED, reason);
+                return new ValidationResult(ResultType.REJECTED, reason != null ? reason : "HTTP " + status);
             }
-
             if (status >= 200 && status < 300) {
-                String reason = json != null && json.has("message") ? json.get("message").getAsString() : "License response rejected";
-                return new ValidationResult(ResultType.REJECTED, reason);
+                return new ValidationResult(ResultType.REJECTED, reason != null ? reason : "License response rejected");
             }
-
-            return new ValidationResult(ResultType.NETWORK_ERROR, "HTTP " + status);
+            return new ValidationResult(ResultType.NETWORK_ERROR, reason != null ? reason : "HTTP " + status);
         } catch (Exception ex) {
             return new ValidationResult(ResultType.NETWORK_ERROR, ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
         }
@@ -215,12 +226,6 @@ public final class LicenseManager {
         return HexFormat.of().formatHex(digest.digest(String.join("|", parts).getBytes(StandardCharsets.UTF_8)));
     }
 
-    private enum ResultType {
-        VALID,
-        REJECTED,
-        NETWORK_ERROR
-    }
-
-    private record ValidationResult(ResultType type, String message) {
-    }
+    private enum ResultType { VALID, REJECTED, NETWORK_ERROR }
+    private record ValidationResult(ResultType type, String message) {}
 }
