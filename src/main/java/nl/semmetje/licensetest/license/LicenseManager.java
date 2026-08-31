@@ -2,6 +2,7 @@ package nl.semmetje.licensetest.license;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import org.bukkit.Bukkit;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -21,13 +22,20 @@ import java.util.Enumeration;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class LicenseManager {
+    private static final long RECHECK_TICKS = 20L * 60L * 5L; // 5 minutes
+    private static final int MAX_NETWORK_FAILURES = 3;
+
     private final JavaPlugin plugin;
     private final String productId;
     private final String endpoint;
     private final Gson gson = new Gson();
+    private final AtomicInteger consecutiveNetworkFailures = new AtomicInteger();
+
     private volatile boolean valid;
+    private volatile String configuredKey;
 
     public LicenseManager(JavaPlugin plugin, String productId, String endpoint) {
         this.plugin = plugin;
@@ -59,14 +67,74 @@ public final class LicenseManager {
                 return false;
             }
 
-            String instanceId = loadOrCreateInstanceId();
-            String fingerprint = machineFingerprint();
+            configuredKey = key;
+            ValidationResult result = validateOnline();
+            if (result.type == ResultType.VALID) {
+                valid = true;
+                plugin.getLogger().info("License validated for product " + productId + ".");
+                return true;
+            }
+
+            valid = false;
+            plugin.getLogger().severe("License rejected: " + result.message);
+            return false;
+        } catch (Exception ex) {
+            valid = false;
+            plugin.getLogger().severe("Could not validate license: " + ex.getMessage());
+            return false;
+        }
+    }
+
+    public void startMonitoring() {
+        Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> {
+            if (!plugin.isEnabled()) return;
+
+            ValidationResult result = validateOnline();
+            if (result.type == ResultType.VALID) {
+                consecutiveNetworkFailures.set(0);
+                return;
+            }
+
+            if (result.type == ResultType.REJECTED) {
+                valid = false;
+                plugin.getLogger().severe("==================================================");
+                plugin.getLogger().severe("LICENSE BECAME INVALID WHILE THE PLUGIN WAS RUNNING");
+                plugin.getLogger().severe("Reason: " + result.message);
+                plugin.getLogger().severe("LicenseTest is being disabled immediately.");
+                plugin.getLogger().severe("==================================================");
+                disableOnMainThread();
+                return;
+            }
+
+            int failures = consecutiveNetworkFailures.incrementAndGet();
+            plugin.getLogger().warning("License server could not be reached (" + failures + "/" + MAX_NETWORK_FAILURES + "): " + result.message);
+            if (failures >= MAX_NETWORK_FAILURES) {
+                valid = false;
+                plugin.getLogger().severe("License verification failed repeatedly. Disabling LicenseTest as a safety measure.");
+                disableOnMainThread();
+            }
+        }, RECHECK_TICKS, RECHECK_TICKS);
+    }
+
+    private void disableOnMainThread() {
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (plugin.isEnabled()) {
+                plugin.getServer().getPluginManager().disablePlugin(plugin);
+            }
+        });
+    }
+
+    private ValidationResult validateOnline() {
+        try {
+            if (configuredKey == null || configuredKey.isBlank()) {
+                return new ValidationResult(ResultType.REJECTED, "No configured license key");
+            }
 
             JsonObject request = new JsonObject();
-            request.addProperty("license_key", key);
+            request.addProperty("license_key", configuredKey);
             request.addProperty("product_id", productId);
-            request.addProperty("instance_id", instanceId);
-            request.addProperty("fingerprint", fingerprint);
+            request.addProperty("instance_id", loadOrCreateInstanceId());
+            request.addProperty("fingerprint", machineFingerprint());
             request.addProperty("plugin_version", plugin.getPluginMeta().getVersion());
 
             HttpURLConnection con = (HttpURLConnection) URI.create(endpoint).toURL().openConnection();
@@ -90,19 +158,29 @@ public final class LicenseManager {
                 response = stream == null ? "" : new String(stream.readAllBytes(), StandardCharsets.UTF_8);
             }
 
-            JsonObject json = gson.fromJson(response, JsonObject.class);
-            if (status != 200 || json == null || !json.has("valid") || !json.get("valid").getAsBoolean()) {
-                String reason = json != null && json.has("message") ? json.get("message").getAsString() : "HTTP " + status;
-                plugin.getLogger().severe("License rejected: " + reason);
-                return false;
+            JsonObject json = null;
+            try {
+                if (!response.isBlank()) json = gson.fromJson(response, JsonObject.class);
+            } catch (Exception ignored) {
             }
 
-            valid = true;
-            plugin.getLogger().info("License validated for product " + productId + ".");
-            return true;
+            if (json != null && json.has("valid") && json.get("valid").getAsBoolean()) {
+                return new ValidationResult(ResultType.VALID, json.has("message") ? json.get("message").getAsString() : "License valid");
+            }
+
+            if (status >= 400 && status < 500) {
+                String reason = json != null && json.has("message") ? json.get("message").getAsString() : "HTTP " + status;
+                return new ValidationResult(ResultType.REJECTED, reason);
+            }
+
+            if (status >= 200 && status < 300) {
+                String reason = json != null && json.has("message") ? json.get("message").getAsString() : "License response rejected";
+                return new ValidationResult(ResultType.REJECTED, reason);
+            }
+
+            return new ValidationResult(ResultType.NETWORK_ERROR, "HTTP " + status);
         } catch (Exception ex) {
-            plugin.getLogger().severe("Could not validate license: " + ex.getMessage());
-            return false;
+            return new ValidationResult(ResultType.NETWORK_ERROR, ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
         }
     }
 
@@ -135,5 +213,14 @@ public final class LicenseManager {
         Collections.sort(parts);
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         return HexFormat.of().formatHex(digest.digest(String.join("|", parts).getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private enum ResultType {
+        VALID,
+        REJECTED,
+        NETWORK_ERROR
+    }
+
+    private record ValidationResult(ResultType type, String message) {
     }
 }
