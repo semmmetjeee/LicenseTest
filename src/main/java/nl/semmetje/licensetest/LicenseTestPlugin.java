@@ -11,11 +11,7 @@ public final class LicenseTestPlugin extends JavaPlugin {
 
     @Override
     public void onLoad() {
-        licenseManager = new LicenseManager(
-                this,
-                "license-test",
-                "http://marsdevelopment.gt.tc/api/license/validate.php"
-        );
+        licenseManager = new LicenseManager(this, "license-test");
 
         if (!licenseManager.validateBeforeEnable()) {
             getLogger().severe("License validation failed. The plugin will remain disabled.");
